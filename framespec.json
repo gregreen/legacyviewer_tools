@@ -16,5 +16,23 @@
     "CD2_2": 0.01,
     "IMAGEW": 1024,
     "IMAGEH": 512
+  },
+  {
+    "layer": ["wssa[0]","unwise-neo7[1]","unwise-neo7[0]"],
+    "NAXIS": 2,
+    "NAXIS1": 1024,
+    "NAXIS2": 512,
+    "CTYPE1": "RA---TAN",
+    "CTYPE2": "DEC--TAN",
+    "CRVAL1": 257.9169,
+    "CRVAL2": -27.2569,
+    "CRPIX1": 512.5,
+    "CRPIX2": 256.5,
+    "CD1_1": -0.01,
+    "CD1_2": 0.0,
+    "CD2_1": 0.0,
+    "CD2_2": 0.01,
+    "IMAGEW": 1024,
+    "IMAGEH": 512
   }
 ]

@@ -71,27 +71,22 @@ def fix_legacyviewer_header(header):
     return n_bands
 
 
-def get_hdulist_per_band(hdulist):
-    band_hdulist = None
+def get_hdulist_for_band(hdulist, band):
+    hdulist_b = []
 
     for hdu in hdulist:
-        if band_hdulist is None:
-            n_bands = hdu.header['NAXIS3']
-            band_hdulist = [[] for b in range(n_bands)]
-
         if hdu.header['NAXIS'] == 3:
             hdu.header['NAXIS'] = 2
             hdu.header.pop('NAXIS3')
-            for b in range(n_bands):
-                d = hdu.data[b,:,:].copy()
-                band_hdulist[b].append(fits.ImageHDU(header=hdu.header, data=d))
+            d = hdu.data[band,:,:].copy()
+            hdulist_b.append(fits.ImageHDU(header=hdu.header, data=d))
         else:
-            band_hdulist[0].append(hdu)
+            hdulist_b.append(hdu)
 
-    return band_hdulist
+    return hdulist_b
 
 
-def healpix_mosaic(layer, wcs, spacing=0.45, band=None, verbose=False):
+def healpix_mosaic(layer, wcs, band=0, spacing=0.45, verbose=False):
     # Determine nside from WCS pixel scale
     cutout_npix = 256
     wcs_pixscale = np.min(proj_plane_pixel_scales(wcs))
@@ -125,34 +120,19 @@ def healpix_mosaic(layer, wcs, spacing=0.45, band=None, verbose=False):
         fetch_cutout_healpix(layer, nside, i, spacing=spacing, verbose=verbose)
         for i in hpix_idx_iter
     ]
-    hdulist = get_hdulist_per_band(hdulist)
+    hdulist = get_hdulist_for_band(hdulist, band)
 
     shape_out = wcs.pixel_shape[::-1]
 
     if verbose:
         print('Reprojecting images ...')
 
-    if band is None:
-        if verbose:
-            hdulist = tqdm(hdulist)
-        img = []
-        for hdulist_b in hdulist:
-            im,_ = reproject_and_coadd(
-                fits.HDUList(hdulist_b),
-                wcs,
-                shape_out=shape_out,
-                reproject_function=reproject_interp
-            )
-            img.append(im)
-        img = np.stack(img, axis=0)
-    else:
-        img,_ = reproject_and_coadd(
-            fits.HDUList(hdulist[band]),
-            wcs,
-            shape_out=shape_out,
-            reproject_function=reproject_interp
-        )
-
+    img,_ = reproject_and_coadd(
+        fits.HDUList(hdulist),
+        wcs,
+        shape_out=shape_out,
+        reproject_function=reproject_interp
+    )
 
     if verbose:
         print(f'Image shape = {img.shape}')
