@@ -36,10 +36,11 @@ def main():
     fname = 'zoom_l317_b-4.json'
     lon,lat = [317.15, -4.15] * units.deg
     galactic = True
-    img_scale_0 = 10. * units.deg
-    img_scale_1 = 1000 * units.arcsec
+    img_scale_0 = 15. * units.deg
+    img_scale_1 = 1.0 * units.deg
+    #img_scale_1 = 1000 * units.arcsec
     img_shape = (1920, 1080)
-    n_frames = 15
+    n_frames = 150
 
     pixscale0 = img_scale_0 / img_shape[0]
     pixscale1 = img_scale_1 / img_shape[0]
