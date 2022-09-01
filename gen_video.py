@@ -175,7 +175,9 @@ def save_image(img, fname,
     elif vmax_abs is not None:
         img = img / np.array(vmax_abs)[None,None,:]
 
-    img = img**gamma
+    img_norm = np.linalg.norm(img, axis=2)
+    img = img * (img_norm**(gamma-1))[:,:,None]
+    #img = img**gamma
     img *= 255.
     img = np.clip(img, 0, 255).astype('uint8')
 
