@@ -168,12 +168,12 @@ def save_image(img, fname,
                vmax_pct=99.5, vmax_abs=None,
                gamma=0.5):
     if subtract_min:
-        img -= np.nanmin(np.nanmin(img, axis=0), axis=0)[None,None,:]
+        img = img - np.nanmin(np.nanmin(img, axis=0), axis=0)[None,None,:]
     if vmax_pct is not None:
         img_flat = np.reshape(img, (-1,img.shape[2]))
         img = img / np.percentile(img_flat, vmax_pct, axis=0)[None,None,:]
     elif vmax_abs is not None:
-        img /= np.array(vmax_abs)[None,None,:]
+        img = img / np.array(vmax_abs)[None,None,:]
 
     img = img**gamma
     img *= 255.
@@ -198,8 +198,8 @@ def load_wcs_list(fname):
 def save_fits(fname, img, wcs):
     header = wcs.to_header()
     hdu = fits.ImageHDU(data=img, header=header)
-    hdu_list = fits.HDUList([hdu])
-    hdu_list.writeto(fname)
+    with fits.open(fname, mode='append') as f:
+        f.append(hdu)
 
 
 def main():
@@ -214,9 +214,14 @@ def main():
         help='JSON containing a list of WCS dictionaries.'
     )
     parser.add_argument(
-        'outpattern',
+        '--img-outpattern',
         type=str,
-        help='Output filename pattern, in fstring format, taking frame index.'
+        help='Image output filename, in fstring format, taking frame index.'
+    )
+    parser.add_argument(
+        '--fits-out',
+        type=str,
+        help='FITS output filename.'
     )
     parser.add_argument(
         '--verbose', '-v',
@@ -224,10 +229,6 @@ def main():
         help='Verbose output.'
     )
     args = parser.parse_args()
-
-    out_basefn,out_fmt = os.path.splitext(args.outpattern)
-    if out_fmt == '':
-        out_fmt = '.fits'
 
     layer_list, wcs_list = load_wcs_list(args.framespec)
     for i,(layers,wcs) in enumerate(tqdm(zip(layer_list,wcs_list))):
@@ -245,10 +246,11 @@ def main():
         if args.verbose:
             print(f'Combined image shape: {img.shape}')
 
-        fname = out_basefn.format(i) + out_fmt
-        if out_fmt == '.fits':
-            save_fits(img, fname, wcs)
-        else:
+        if args.fits_out is not None:
+            save_fits(args.fits_out, img, wcs)
+
+        if args.img_outpattern is not None:
+            fname = args.img_outpattern.format(i)
             save_image(img, fname, subtract_min=True, vmax_pct=99.5)
 
     return 0
