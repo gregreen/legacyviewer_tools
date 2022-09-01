@@ -87,8 +87,8 @@ def get_hdulist_for_band(hdulist, band):
 
 
 def healpix_mosaic(layer, wcs, band=0,
-                   spacing=0.45, exact=False,
-                   verbose=False):
+                   spacing=0.45, nside_buffer=0.5,
+                   exact=False, verbose=False):
     # Determine nside from WCS pixel scale
     cutout_npix = 256
     wcs_pixscale = np.min(proj_plane_pixel_scales(wcs))
@@ -97,6 +97,7 @@ def healpix_mosaic(layer, wcs, band=0,
     nside = (
         np.sqrt(4*np.pi/12)
       * (1+spacing) / (cutout_npix*np.radians(wcs_pixscale))
+      * (1+nside_buffer)
     )
     nside = 2**(int(np.ceil(np.log2(nside))))
     if verbose:
@@ -169,14 +170,23 @@ def get_wcs_dict(lon0, lat0, pixscale, shape, galactic=True):
 def save_image(img, fname,
                subtract_min=True,
                vmax_pct=99.5, vmax_abs=None,
-               gamma=0.5):
+               gamma=0.5,
+               vmax_last=None, vmax_momentum=0.9):
     if subtract_min:
         img = img - np.nanmin(np.nanmin(img, axis=0), axis=0)[None,None,:]
+    else:
+        img[img < 0] = 0.
+
     if vmax_pct is not None:
         img_flat = np.reshape(img, (-1,img.shape[2]))
-        img = img / np.percentile(img_flat, vmax_pct, axis=0)[None,None,:]
+        vmax = np.percentile(img_flat, vmax_pct, axis=0)[None,None,:]
     elif vmax_abs is not None:
-        img = img / np.array(vmax_abs)[None,None,:]
+        vmax = np.array(vmax_abs)[None,None,:]
+
+    if vmax_last is not None:
+        vmax = vmax_momentum*vmax_last + (1-vmax_momentum)*vmax
+
+    img = img / vmax
 
     img_norm = np.linalg.norm(img, axis=2)
     img = img * (img_norm**(gamma-1))[:,:,None]
@@ -190,6 +200,9 @@ def save_image(img, fname,
         im = Image.fromarray(img[::-1,:,:], mode='RGB')
 
     im.save(fname)
+
+    if vmax_last is not None:
+        return vmax
 
 
 def load_wcs_list(fname):
@@ -240,7 +253,10 @@ def main():
     )
     args = parser.parse_args()
 
+    vmax_last = None
+
     layer_list, wcs_list = load_wcs_list(args.framespec)
+
     for i,(layers,wcs) in enumerate(tqdm(zip(layer_list,wcs_list))):
         img = []
         for l in layers:
@@ -265,7 +281,11 @@ def main():
 
         if args.img_outpattern is not None:
             fname = args.img_outpattern.format(i)
-            save_image(img, fname, subtract_min=True, vmax_pct=99.5)
+            vmax_last = save_image(
+                img, fname,
+                subtract_min=False,
+                vmax_pct=99.5, vmax_last=vmax_last
+            )
 
     return 0
 
