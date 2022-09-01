@@ -18,7 +18,7 @@ from astropy_healpix import HEALPix
 import astropy.units as units
 
 import reproject
-from reproject import reproject_interp
+from reproject import reproject_interp, reproject_exact
 from reproject.mosaicking import reproject_and_coadd
 
 from PIL import Image
@@ -86,7 +86,9 @@ def get_hdulist_for_band(hdulist, band):
     return hdulist_b
 
 
-def healpix_mosaic(layer, wcs, band=0, spacing=0.45, verbose=False):
+def healpix_mosaic(layer, wcs, band=0,
+                   spacing=0.45, exact=False,
+                   verbose=False):
     # Determine nside from WCS pixel scale
     cutout_npix = 256
     wcs_pixscale = np.min(proj_plane_pixel_scales(wcs))
@@ -124,14 +126,15 @@ def healpix_mosaic(layer, wcs, band=0, spacing=0.45, verbose=False):
 
     shape_out = wcs.pixel_shape[::-1]
 
+    reproj = reproject_exact if exact else reproject_interp
     if verbose:
-        print('Reprojecting images ...')
+        print(f'Reprojecting images using {reproj.__name__} ...')
 
     img,_ = reproject_and_coadd(
         fits.HDUList(hdulist),
         wcs,
         shape_out=shape_out,
-        reproject_function=reproject_interp
+        reproject_function=reproj
     )
 
     if verbose:
@@ -140,16 +143,16 @@ def healpix_mosaic(layer, wcs, band=0, spacing=0.45, verbose=False):
     return img
 
 
-def get_galactic_wcs(l0, b0, pixscale, shape):
+def get_wcs_dict(lon0, lat0, pixscale, shape, galactic=True):
     pixscale_deg = pixscale.to('deg').value
     wcs = {
         'NAXIS': 2,
         'NAXIS1': shape[0],
         'NAXIS2': shape[1],
-        'CTYPE1': 'GLON-TAN',
-        'CTYPE2': 'GLAT-TAN',
-        'CRVAL1': l0.to('deg').value,
-        'CRVAL2': b0.to('deg').value,
+        'CTYPE1': 'GLON-TAN' if galactic else 'RA---TAN',
+        'CTYPE2': 'GLAT-TAN' if galactic else 'DEC--TAN',
+        'CRVAL1': lon0.to('deg').value,
+        'CRVAL2': lat0.to('deg').value,
         'CRPIX1': shape[0]/2 + 0.5,
         'CRPIX2': shape[1]/2 + 0.5,
         'CD1_1': -pixscale_deg,
@@ -226,6 +229,11 @@ def main():
         help='FITS output filename.'
     )
     parser.add_argument(
+        '--reproject-exact',
+        action='store_true',
+        help='Use slower, more accurate reprojection.'
+    )
+    parser.add_argument(
         '--verbose', '-v',
         action='store_true',
         help='Verbose output.'
@@ -240,7 +248,11 @@ def main():
             l,b = l.split('[')
             b = int(b.rstrip(']'))
             # Generate image of selected (layer,band)
-            img.append(healpix_mosaic(l, wcs, band=b, verbose=args.verbose))
+            img.append(healpix_mosaic(
+                l, wcs, band=b,
+                exact=args.reproject_exact,
+                verbose=args.verbose
+            ))
 
         # Combine bands
         img = np.stack(img, axis=2)
