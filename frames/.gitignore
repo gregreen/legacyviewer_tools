@@ -1,0 +1,4 @@
+# Ignore generated frames
+*.fits
+*.png
+*.jpg
