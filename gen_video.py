@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import os
 import shutil
 import requests
+import json
 
 import astropy.io.fits as fits
 from astropy.wcs import WCS
@@ -90,7 +91,7 @@ def get_hdulist_per_band(hdulist):
     return band_hdulist
 
 
-def healpix_mosaic(layer, wcs, spacing=0.45, verbose=False):
+def healpix_mosaic(layer, wcs, spacing=0.45, band=None, verbose=False):
     # Determine nside from WCS pixel scale
     cutout_npix = 256
     wcs_pixscale = np.min(proj_plane_pixel_scales(wcs))
@@ -126,23 +127,33 @@ def healpix_mosaic(layer, wcs, spacing=0.45, verbose=False):
     ]
     hdulist = get_hdulist_per_band(hdulist)
 
-    img = []
     shape_out = wcs.pixel_shape[::-1]
 
     if verbose:
-        hdulist = tqdm(hdulist)
         print('Reprojecting images ...')
 
-    for hdulist_b in hdulist:
-        im,_ = reproject_and_coadd(
-            fits.HDUList(hdulist_b),
+    if band is None:
+        if verbose:
+            hdulist = tqdm(hdulist)
+        img = []
+        for hdulist_b in hdulist:
+            im,_ = reproject_and_coadd(
+                fits.HDUList(hdulist_b),
+                wcs,
+                shape_out=shape_out,
+                reproject_function=reproject_interp
+            )
+            img.append(im)
+        img = np.stack(img, axis=0)
+    else:
+        img,_ = reproject_and_coadd(
+            fits.HDUList(hdulist[band]),
             wcs,
             shape_out=shape_out,
             reproject_function=reproject_interp
         )
-        img.append(im)
 
-    img = np.stack(img, axis=0)
+
     if verbose:
         print(f'Image shape = {img.shape}')
 
@@ -172,35 +183,93 @@ def get_galactic_wcs(l0, b0, pixscale, shape):
     return wcs
 
 
-def save_image(img, fname, subtract_min=True, vmax_pct=99.5, vmax_abs=None):
+def save_image(img, fname,
+               subtract_min=True,
+               vmax_pct=99.5, vmax_abs=None,
+               gamma=0.5):
     if subtract_min:
-        img -= np.nanmin(img)
+        img -= np.nanmin(np.nanmin(img, axis=0), axis=0)[None,None,:]
     if vmax_pct is not None:
-        img = img / np.percentile(img, vmax_pct)
+        img_flat = np.reshape(img, (-1,img.shape[2]))
+        img = img / np.percentile(img_flat, vmax_pct, axis=0)[None,None,:]
     elif vmax_abs is not None:
-        img /= vmax_abs
-    img = np.sqrt(img)
+        img /= np.array(vmax_abs)[None,None,:]
+
+    img = img**gamma
     img *= 255.
     img = np.clip(img, 0, 255).astype('uint8')
-    im = Image.fromarray(img.T, mode='L')
+
+    if img.shape[0] == 1:
+        im = Image.fromarray(img[::-1,:,0], mode='L')
+    else:
+        im = Image.fromarray(img[::-1,:,:], mode='RGB')
+
     im.save(fname)
 
 
+def load_wcs_list(fname):
+    with open(fname, 'r') as f:
+        d = json.load(f)
+    layer_list = [wcs.pop('layer') for wcs in d]
+    wcs_list = [WCS(wcs) for wcs in d]
+    return layer_list, wcs_list
+
+
+def save_fits(fname, img, wcs):
+    header = wcs.to_header()
+    hdu = fits.ImageHDU(data=img, header=header)
+    hdu_list = fits.HDUList([hdu])
+    hdu_list.writeto(fname)
+
+
 def main():
-    wcs = get_galactic_wcs(-10.*units.deg, 5.0*units.deg, 2.0*units.arcsec, (1024,512))
-    img = healpix_mosaic('decaps2', wcs, verbose=True)
+    from argparse import ArgumentParser
+    parser = ArgumentParser(
+        description='Generate video frames of astronomical surveys.',
+        add_help=True
+    )
+    parser.add_argument(
+        'framespec',
+        type=str,
+        help='JSON containing a list of WCS dictionaries.'
+    )
+    parser.add_argument(
+        'outpattern',
+        type=str,
+        help='Output filename pattern, in fstring format, taking frame index.'
+    )
+    parser.add_argument(
+        '--verbose', '-v',
+        action='store_true',
+        help='Verbose output.'
+    )
+    args = parser.parse_args()
 
-    print(np.nanmin(img), np.nanmax(img))
-    img -= np.nanmin(np.nanmin(img, axis=1), axis=1)[:,None,None]
-    img = np.sqrt(img)
-    vmax = np.nanpercentile(np.reshape(img,(2,-1)), 99.8, axis=1)
+    out_basefn,out_fmt = os.path.splitext(args.outpattern)
+    if out_fmt == '':
+        out_fmt = '.fits'
 
-    print(wcs)
-    plt.subplot(projection=wcs)
-    plt.imshow(img[0], origin='lower', vmin=0, vmax=vmax[0])
-    plt.grid(color='gray', ls='solid', alpha=0.5)
-    plt.savefig('decaps2.png', dpi=200)
-    plt.show()
+    layer_list, wcs_list = load_wcs_list(args.framespec)
+    for i,(layers,wcs) in enumerate(tqdm(zip(layer_list,wcs_list))):
+        img = []
+        for l in layers:
+            # Determine layer name, and which band to extract
+            l,b = l.split('[')
+            b = int(b.rstrip(']'))
+            # Generate image of selected (layer,band)
+            img.append(healpix_mosaic(l, wcs, band=b, verbose=args.verbose))
+
+        # Combine bands
+        img = np.stack(img, axis=2)
+
+        if args.verbose:
+            print(f'Combined image shape: {img.shape}')
+
+        fname = out_basefn.format(i) + out_fmt
+        if out_fmt == '.fits':
+            save_fits(img, fname, wcs)
+        else:
+            save_image(img, fname, subtract_min=True, vmax_pct=99.5)
 
     return 0
 
