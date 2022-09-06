@@ -18,19 +18,25 @@ from astropy_healpix import HEALPix
 import astropy.units as units
 
 import reproject
-from reproject import reproject_interp, reproject_exact
+from reproject import reproject_interp, reproject_exact, reproject_adaptive
 from reproject.mosaicking import reproject_and_coadd
+
+from scipy.optimize import minimize_scalar
 
 from PIL import Image
 
 from tqdm import tqdm
 
 
+cutout_dir = os.environ.get('CUTOUT_DIR', 'cutouts/')
+#n_cores = os.environ.get('REPROJ_NCPU', 1)
+
+
 def fetch_cutout_healpix(layer, nside, pix_idx,
                          spacing=0.45, overwrite=False,
                          verbose=False):
     fname = os.path.join(
-        'cutouts',
+        cutout_dir,
         f'{layer:s}_nside{nside:d}_pix{pix_idx:d}_spacing{spacing:.3f}.fits'
     )
 
@@ -86,9 +92,23 @@ def get_hdulist_for_band(hdulist, band):
     return hdulist_b
 
 
+def find_gamma_stretch(img, target, reduce=np.nanmedian, gamma_bounds=(0.25,1.75)):
+    if reduce == np.nanmedian:
+        gamma_opt = np.log(target) / np.log(np.nanmedian(img))
+        return np.clip(gamma_opt, *gamma_bounds)
+
+    def f(gamma):
+        return (reduce(img**gamma) - target)**2
+
+    res = minimize_scalar(f, bounds=gamma_bounds, method='bounded')
+    gamma_opt = res.x
+
+    return gamma_opt
+
+
 def healpix_mosaic(layer, wcs, band=0,
-                   spacing=0.45, nside_buffer=0.5,
-                   exact=False, verbose=False):
+                   spacing=0.45, nside_buffer=0.2,
+                   reproj_method='interp', verbose=False):
     # Determine nside from WCS pixel scale
     cutout_npix = 256
     wcs_pixscale = np.min(proj_plane_pixel_scales(wcs))
@@ -127,7 +147,16 @@ def healpix_mosaic(layer, wcs, band=0,
 
     shape_out = wcs.pixel_shape[::-1]
 
-    reproj = reproject_exact if exact else reproject_interp
+    if reproj_method == 'exact':
+        reproj = reproject_exact
+        kwargs = dict()
+    elif reproj_method == 'adaptive':
+        reproj = reproject_adaptive
+        kwargs = dict()
+    elif reproj_method == 'interp':
+        reproj = reproject_interp
+        kwargs = dict(order=1)
+
     if verbose:
         print(f'Reprojecting images using {reproj.__name__} ...')
 
@@ -135,7 +164,8 @@ def healpix_mosaic(layer, wcs, band=0,
         fits.HDUList(hdulist),
         wcs,
         shape_out=shape_out,
-        reproject_function=reproj
+        reproject_function=reproj,
+        **kwargs
     )
 
     if verbose:
@@ -170,27 +200,59 @@ def get_wcs_dict(lon0, lat0, pixscale, shape, galactic=True):
 def save_image(img, fname,
                subtract_min=True,
                vmax_pct=99.5, vmax_abs=None,
-               gamma=0.5,
-               vmax_last=None, vmax_momentum=0.9):
+               gamma=0.5, norm_last=None, norm_momentum=0.9,
+               vmax_last=None, vmax_momentum=0.9,
+               verbose=False):
+    # Ensure that there are no negative values
     if subtract_min:
         img = img - np.nanmin(np.nanmin(img, axis=0), axis=0)[None,None,:]
     else:
         img[img < 0] = 0.
 
+    # Determine vmax
+    vmax = 1.
+
     if vmax_pct is not None:
         img_flat = np.reshape(img, (-1,img.shape[2]))
-        vmax = np.percentile(img_flat, vmax_pct, axis=0)[None,None,:]
+        vmax = np.nanpercentile(img_flat, vmax_pct, axis=0)[None,None,:]
     elif vmax_abs is not None:
         vmax = np.array(vmax_abs)[None,None,:]
 
     if vmax_last is not None:
         vmax = vmax_momentum*vmax_last + (1-vmax_momentum)*vmax
 
+    # Apply vmax
+    #print('vmax', vmax)
     img = img / vmax
 
+    # Apply gamma stretch to norm of each pixel value
     img_norm = np.linalg.norm(img, axis=2)
-    img = img * (img_norm**(gamma-1))[:,:,None]
+    img_norm[img_norm==0] = 1.e-5
+
+    if norm_last is None:
+        gamma_opt = gamma
+    else:
+        # Search for optimal gamma stretch, balancing continuity in image
+        # appearance and matching target gamma stretch.
+        target_norm = np.nanmedian(img_norm)**gamma
+        target_norm = norm_momentum*norm_last + (1-norm_momentum)*target_norm
+        gamma_opt = find_gamma_stretch(img_norm, target_norm)
+        #if not np.isfinite(gamma_opt):
+        #    print(np.nanmedian(img_norm))
+        #    print(target_norm)
+        #    print(np.nanpercentile(img_norm, [1., 10., 25., 50., 75., 90., 99.]))
+        #if verbose:
+        print(f'Applying gamma={gamma_opt} stretch to norm of each pixel.')
+
+    img_norm_reduced = np.nanmedian(img_norm)**gamma_opt
+
+    img = img * (img_norm**(gamma_opt-1))[:,:,None]
     #img = img**gamma
+
+    # Remove NaNs from image
+    img[~np.isfinite(img)] = 0.
+
+    # Convert image to uint8
     img *= 255.
     img = np.clip(img, 0, 255).astype('uint8')
 
@@ -201,8 +263,8 @@ def save_image(img, fname,
 
     im.save(fname)
 
-    if vmax_last is not None:
-        return vmax
+    # Return vmax and average pixel norm in image
+    return vmax, img_norm_reduced
 
 
 def load_wcs_list(fname):
@@ -242,9 +304,23 @@ def main():
         help='FITS output filename.'
     )
     parser.add_argument(
-        '--reproject-exact',
-        action='store_true',
-        help='Use slower, more accurate reprojection.'
+        '--reproject-method',
+        type=str,
+        default='interp',
+        choices=('interp','adaptive','exact'),
+        help='Reprojection method: interp, adaptive or exact.'
+    )
+    parser.add_argument(
+        '--momentum',
+        type=float,
+        default=0.9,
+        help='Smoothly change vmax and gamma (1=no change, 0=instant change).'
+    )
+    parser.add_argument(
+        '--gamma',
+        type=float,
+        default=0.5,
+        help='Gamma stretch to apply to the images.'
     )
     parser.add_argument(
         '--verbose', '-v',
@@ -253,11 +329,17 @@ def main():
     )
     args = parser.parse_args()
 
-    vmax_last = None
+    vmax_last, norm_last = None, None
+    layers_last = None
 
     layer_list, wcs_list = load_wcs_list(args.framespec)
 
-    for i,(layers,wcs) in enumerate(tqdm(zip(layer_list,wcs_list))):
+    for i,(layers,wcs) in enumerate(zip(tqdm(layer_list),wcs_list)):
+        if layers != layers_last:
+            layers_last = layers
+            vmax_last, norm_last = None, None
+            print('Reset vmax_last and norm_last.')
+
         img = []
         for l in layers:
             # Determine layer name, and which band to extract
@@ -266,7 +348,7 @@ def main():
             # Generate image of selected (layer,band)
             img.append(healpix_mosaic(
                 l, wcs, band=b,
-                exact=args.reproject_exact,
+                reproj_method=args.reproject_method,
                 verbose=args.verbose
             ))
 
@@ -281,10 +363,15 @@ def main():
 
         if args.img_outpattern is not None:
             fname = args.img_outpattern.format(i)
-            vmax_last = save_image(
+            vmax_last, norm_last = save_image(
                 img, fname,
                 subtract_min=False,
-                vmax_pct=99.5, vmax_last=vmax_last
+                vmax_pct=99.5,
+                vmax_last=vmax_last,
+                norm_last=norm_last,
+                gamma=args.gamma,
+                vmax_momentum=args.momentum,
+                verbose=args.verbose
             )
 
     return 0
