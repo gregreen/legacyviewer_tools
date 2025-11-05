@@ -10,6 +10,24 @@ import astropy.units as units
 import json
 
 
+def sph2cart(lon, lat):
+    lon = lon.to('rad').value
+    lat = lat.to('rad').value
+    x = np.cos(lon) * np.cos(lat)
+    y = np.sin(lon) * np.cos(lat)
+    z = np.sin(lat)
+    return np.stack([x,y,z], axis=-1)
+
+
+def cart2sph(x):
+    assert x.shape[-1] == 3
+    x,y,z = [x[...,k] for k in range(3)]
+    r = np.sqrt(x**2 + y**2 + z**2)
+    lon = np.arctan2(y, x)
+    lat = np.arcsin(z/r)
+    return r, lon, lat
+
+
 def great_circle_path(lon0, lat0, lon1, lat1, n_points=100):
     """Generate a great circle path between two points on the sphere.
 
@@ -190,11 +208,99 @@ def get_wcs_dict(lon0, lat0, pixscale, shape, galactic=True):
 
 
 def main():
+    from argparse import ArgumentParser
+    parser = ArgumentParser(
+        description='Generate WCS frame specifications for video.',
+        add_help=True
+    )
+    parser.add_argument(
+        '--coords-start', '-c0',
+        metavar='DEG',
+        type=float,
+        nargs=3,
+        required=True,
+        help='Longitude, latitude, image width (all in deg) of first frame.'
+    )
+    parser.add_argument(
+        '--coords-end', '-c1',
+        metavar='DEG',
+        type=float,
+        nargs=3,
+        required=True,
+        help='Longitude, latitude, image width (all in deg) of last frame.'
+    )
+    parser.add_argument(
+        '--coordsys-input', '-csi',
+        metavar='galactic/icrs',
+        type=str,
+        choices=('galactic','icrs'),
+        default='galactic',
+        help='Coordinate system of input coordinates.'
+    )
+    parser.add_argument(
+        '--coordsys-output', '-cso',
+        metavar='galactic/icrs',
+        type=str,
+        choices=('galactic','icrs'),
+        default='galactic',
+        help='Coordinate system of output frames.'
+    )
+    parser.add_argument(
+        '--n-frames', '-n',
+        metavar='N',
+        type=int,
+        required=True,
+        help='# of frames.'
+    )
+    parser.add_argument(
+        '--layers', '-l',
+        metavar='LAYER[BAND]',
+        type=str,
+        nargs=3,
+        default=['decaps2[2]','decaps2[1]','decaps2[0]'],
+        help='Layers to use for R,G,B channels. Eg., decaps2[0] for DECaPS2 g.'
+    )
+    parser.add_argument(
+        '--coordsys',
+        metavar='galactic/equatorial',
+        type=str,
+        choices=('galactic','equatorial'),
+        default='galactic',
+        help='Coordinate system to use.'
+    )
+    parser.add_argument(
+        '--resolution', '-r',
+        type=str,
+        nargs='+',
+        default='480p',
+        help='Resolution, in pixels (width, height), or (480p, 720p, 1080p).'
+    )
+    args = parser.parse_args()
+
+    # Parse image resolution
+    img_shape_opts = {
+        '480p':(848,480),
+        '720p':(1280,720),
+        '1080p':(1920,1080)
+    }
+
+    if len(args.resolution) == 1:
+        img_shape = img_shape_opts.get(args.resolution[0])
+    elif len(args.resolution) == 2:
+        img_shape = [int(r) for r in args.resolution]
+    else:
+        img_shape = None
+
+    if img_shape is None:
+        print(f'--resolution must be a pair of integers '
+              'or one of {img_shape_opts.keys()}.')
+
+    # Generate WCS header for each frame
     # Start / end coordinates
-    lon0, lat0 = [244.6, -41.5] * units.deg
-    lon1, lat1 = [242.34, -39.10] * units.deg
-    input_frame = 'icrs'
-    output_frame = 'galactic'
+    lon0, lat0, fov0 = args.coords_start * units.deg
+    lon1, lat1, fov1 = args.coords_end * units.deg
+    input_frame = args.coordsys_input
+    output_frame = args.coordsys_output
 
     # Field of view at start / end
     fov0 = 12.8 * units.deg
@@ -203,12 +309,11 @@ def main():
     # Rotation angle of images (w.r.t. output frame)
     rot = 0.0 * units.deg
 
-    # Image shape and number of frames
-    img_shape = (1920//4, 1080//4) # in pixels
-    n_frames = 60
+    # Number of frames
+    n_frames = args.n_frames
 
     # Which layers to use for RGB
-    layer = ['decaps2[2]','decaps2[1]','decaps2[0]']
+    layer = args.layers
 
     # Output filename
     fname = 'path_framespec.json'
@@ -273,46 +378,6 @@ def main():
     
     with open(fname, 'w') as f:
         json.dump(wcs, f, indent=2)
-
-    # fname = 'dust254_res2048.json'
-    # lon,lat = [254.56, -46.045] * units.deg
-    # galactic = False
-    # img_scale_0, img_scale_1 = [0.60, 0.60] * units.deg
-    # img_shape = (2048, 2048)
-    # #img_shape = (512, 512)
-    # n_frames = 1
-
-    # #fname = 'zoom_l317_b-4.json'
-    # #lon,lat = [317.15, -4.15] * units.deg
-    # #galactic = True
-    # #img_scale_0 = 15. * units.deg
-    # #img_scale_1 = 1.0 * units.deg
-    # ##img_scale_1 = 1000 * units.arcsec
-    # #img_shape = (1920, 1080)
-    # #n_frames = 150
-
-    # pixscale0 = img_scale_0 / img_shape[0]
-    # pixscale1 = img_scale_1 / img_shape[0]
-
-    # pixscale = np.exp(np.linspace(
-    #     np.log(pixscale0.to('deg').value),
-    #     np.log(pixscale1.to('deg').value),
-    #     n_frames
-    # )) * units.deg
-
-    # wcs = []
-    # for s in pixscale:
-    #     w = get_wcs_dict(lon, lat, s, img_shape, galactic=galactic)
-    #     w['layer'] = ['decaps2[2]','decaps2[1]','decaps2[0]']
-    #     wcs.append(w)
-
-    #     w = get_wcs_dict(lon, lat, s, img_shape, galactic=galactic)
-    #     #w['layer'] = ['unwise-neo7[1]','unwise-neo7[0]','decaps2-riy[2]']
-    #     w['layer'] = ['unwise-neo7[1]','unwise-neo7[0]','unwise-neo7[0]']
-    #     wcs.append(w)
-
-    # with open(fname, 'w') as f:
-    #     json.dump(wcs, f, indent=2)
     
     return 0
 
