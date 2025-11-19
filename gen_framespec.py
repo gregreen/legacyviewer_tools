@@ -275,6 +275,13 @@ def main():
         default='480p',
         help='Resolution, in pixels (width, height), or (480p, 720p, 1080p).'
     )
+    parser.add_argument(
+        '--output', '-o',
+        metavar='FILENAME.json',
+        type=str,
+        default='path_framespec.json',
+        help='Output filename.'
+    )
     args = parser.parse_args()
 
     # Parse image resolution
@@ -316,7 +323,7 @@ def main():
     layer = args.layers
 
     # Output filename
-    fname = 'path_framespec.json'
+    fname = args.output
 
     # Transform start / end coordinates to output frame
     if input_frame != output_frame:
@@ -340,14 +347,6 @@ def main():
         np.linspace(0, 1, n_frames)
     )
     lonlat = np.stack([lon, lat], axis=1)
-
-    # Calculate inferred fov in the other dimension, based on the
-    # image shape, the fov in the first dimension, assuming square
-    # pixels and a tangent projection.
-    # fov_ratio = 2 * np.arctan(
-    #     img_shape[1]/img_shape[0]*np.tan(fov_x.to('rad').value/2)
-    # )
-    # print(f'fov_y/fov_x = {fov_ratio}')
 
     # Generate WCS for each frame
     wcs = []
